@@ -13,12 +13,20 @@ this repository holds release builds only. the source is private.
 
 every release, with checksums: [releases](https://github.com/agentmash-dev/lobby-releases/releases)
 
-## first launch on a mac
+## install on a mac, one command
+
+```
+curl -fsSL https://github.com/agentmash-dev/lobby-releases/releases/latest/download/install.sh | sh
+```
+
+it downloads the latest zip, checks it against the release's SHA256SUMS, puts the app in /Applications and opens it. what curl downloads isn't marked for gatekeeper, so the app opens right away while it isn't notarized yet. the script is [install.sh](https://github.com/agentmash-dev/lobby-releases/releases/latest/download/install.sh) in each release: read it first if you like.
+
+## first launch on a mac, from the dmg
 
 the app isn't notarized by apple yet, so macos stops it the first time:
 
 1. open the dmg and drag agentmash-lobby to applications
-2. open it. macos says it can't check it for malware: click done
+2. open it. macos says it can't check it for malware: click **done**, not "move to trash"
 3. system settings > privacy & security, scroll down, "open anyway" next to agentmash-lobby, and confirm
 
 after that it opens like any app. or, in a terminal: `xattr -dr com.apple.quarantine /Applications/agentmash-lobby.app`
