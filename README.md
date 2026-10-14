@@ -24,7 +24,7 @@ it picks your mac's kind (apple silicon or intel), downloads the latest zip, che
 
 ## updates
 
-from 0.26.0 the app updates itself: a newer release shows in its status bar (and in the app menu's check for updates…). one click downloads it, checks it against the release's SHA256SUMS and the app's signature, and restarts the app on it; on windows it runs the new installer. an older copy updates once more with the command above or a download.
+the app updates itself. from 0.27.0 a newer release downloads in the background as soon as the app finds it (it checks on its own, or from check for updates… in the app menu) and is checked against the release's SHA256SUMS and the app's signature. **update ready · restart to install**, at the bottom of the sidebar, puts it in place, with a short confirm when agents are running; only that click installs anything. on windows the new installer runs as an update, without its wizard. 0.26.x shows a newer release in its status bar instead, and from 0.26.2 to 0.27.0 windows shows the installer's wizard one last time. a copy older than 0.26.0 updates once more with the command above or a download.
 
 ## first launch on a mac, from the dmg
 
