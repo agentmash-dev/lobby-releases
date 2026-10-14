@@ -1,0 +1,126 @@
+# a lobby release, built here: this repository is public, so github's mac and windows runners cost nothing.
+# the app's code is in the private agentmash-dev/lobby; the LOBBY_SOURCE_TOKEN secret reads it (a fine-grained
+# token with read-only contents on that one repository).
+#
+#   gh workflow run release --repo agentmash-dev/lobby-releases                  the version on lobby's main
+#   gh workflow run release --repo agentmash-dev/lobby-releases -f dry_run=true  builds it all, publishes nothing
+#
+# the version is apps/desktop/package.json's on that commit: bump it in lobby first. the release gets the files the
+# app updates from (src/updates.ts there): the mac zips and dmgs, the windows installer, install.sh and SHA256SUMS.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: lobby branch, tag or commit to build
+        default: main
+      notes:
+        description: release notes (markdown); empty takes docs/releases/<version>.md from lobby if it has one
+        default: ''
+      dry_run:
+        description: build everything, publish nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: agentmash-dev/lobby
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # both arches, ad-hoc signed (scripts/dist-mac.mjs)
+      - run: npm run dist:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/agentmash-lobby-mac-arm64.zip
+            apps/desktop/release/agentmash-lobby-mac-arm64.dmg
+            apps/desktop/release/agentmash-lobby-mac-x64.zip
+            apps/desktop/release/agentmash-lobby-mac-x64.dmg
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: agentmash-dev/lobby
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:win
+      # the package checked the way lobby's ci does it
+      - run: node --conditions=source --import tsx scripts/dist-check.mjs --package --app apps/desktop/release/win-unpacked/agentmash-lobby.exe
+      # the name the app updates from, whatever the version
+      - shell: bash
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          mv "apps/desktop/release/agentmash-lobby-$version-setup.exe" apps/desktop/release/agentmash-lobby-win-x64-setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          if-no-files-found: error
+          path: apps/desktop/release/agentmash-lobby-win-x64-setup.exe
+
+  publish:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: agentmash-dev/lobby
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: sums and notes
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          echo "version=$version" >> "$GITHUB_ENV"
+          cp scripts/install-mac.sh dist/install.sh
+          (cd dist && sha256sum agentmash-lobby-* install.sh > SHA256SUMS && cat SHA256SUMS)
+          if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES" > notes.md
+          elif [ -f "docs/releases/$version.md" ]; then cp "docs/releases/$version.md" notes.md
+          else echo "agentmash lobby $version" > notes.md; fi
+          ls -la dist
+      - name: publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::v$version is already released: bump apps/desktop/package.json in lobby first"
+            exit 1
+          fi
+          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash lobby $version" --notes-file notes.md --latest
