@@ -124,3 +124,29 @@ jobs:
             exit 1
           fi
           gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash lobby $version" --notes-file notes.md --latest
+      # the agentmash community's patch notes chat on telegram, when the bot's secrets are here (agentmash's
+      # RUNBOOK.md, "patch notes on telegram"). A post that doesn't go never fails the release.
+      - name: tell the patch notes chat
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "no TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets: nothing sent"
+            exit 0
+          fi
+          notes=$(cat notes.md)
+          # the notes that only say the version add nothing under a heading that says it
+          [ "$notes" != "agentmash lobby $version" ] || notes=""
+          {
+            printf 'agentmash lobby %s is out\n\n' "$version"
+            [ -z "$notes" ] || printf '%s\n\n' "$notes"
+            printf 'the app updates itself within the hour. new here: https://github.com/%s/releases/tag/v%s\n' "$GITHUB_REPOSITORY" "$version"
+          } > post.txt
+          args=(--data-urlencode "chat_id=$TELEGRAM_CHAT_ID" --data-urlencode "text@post.txt" --data-urlencode 'link_preview_options={"is_disabled":true}')
+          [ -z "$TELEGRAM_THREAD_ID" ] || args+=(--data-urlencode "message_thread_id=$TELEGRAM_THREAD_ID")
+          curl -fsS --max-time 15 -o /dev/null "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" "${args[@]}"
+          echo "sent to the patch notes chat"
