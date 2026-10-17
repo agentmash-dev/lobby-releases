@@ -134,7 +134,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
         run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+          # each as pasted, less spaces anywhere and quotes around it; a chat written as telegram's web app
+          # shows a topic, -100…_<topic>, is the chat and then the topic
+          clean() { printf '%s' "$1" | tr -d '[:space:]' | sed -E "s/^([\"'])(.*)\\1\$/\\2/"; }
+          token=$(clean "$TELEGRAM_BOT_TOKEN")
+          chat=$(clean "$TELEGRAM_CHAT_ID")
+          thread=$(clean "$TELEGRAM_THREAD_ID")
+          if [[ $chat =~ ^(-?[0-9]+)_([0-9]+)$ ]]; then
+            chat=${BASH_REMATCH[1]}
+            thread=${thread:-${BASH_REMATCH[2]}}
+          fi
+          if [ -z "$token" ] || [ -z "$chat" ]; then
             echo "no TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets: nothing sent"
             exit 0
           fi
@@ -146,7 +156,7 @@ jobs:
             [ -z "$notes" ] || printf '%s\n\n' "$notes"
             printf 'the app updates itself within the hour. new here: https://github.com/%s/releases/tag/v%s\n' "$GITHUB_REPOSITORY" "$version"
           } > post.txt
-          args=(--data-urlencode "chat_id=$TELEGRAM_CHAT_ID" --data-urlencode "text@post.txt" --data-urlencode 'link_preview_options={"is_disabled":true}')
-          [ -z "$TELEGRAM_THREAD_ID" ] || args+=(--data-urlencode "message_thread_id=$TELEGRAM_THREAD_ID")
-          curl -fsS --max-time 15 -o /dev/null "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" "${args[@]}"
+          args=(--data-urlencode "chat_id=$chat" --data-urlencode "text@post.txt" --data-urlencode 'link_preview_options={"is_disabled":true}')
+          [ -z "$thread" ] || args+=(--data-urlencode "message_thread_id=$thread")
+          curl -fsS --max-time 15 -o /dev/null "https://api.telegram.org/bot$token/sendMessage" "${args[@]}"
           echo "sent to the patch notes chat"
