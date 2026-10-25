@@ -1,0 +1,73 @@
+# a lobby release told to the agentmash community's patch notes chat on telegram (agentmash's RUNBOOK.md, "patch
+# notes on telegram"), the same post release.yml makes for its own releases. this one is for a release published
+# another way (built and uploaded from a mac, then published) and for telling one again:
+#
+#   gh workflow run patch-notes --repo agentmash-dev/lobby-releases -f tag=v0.39.0
+#
+# a release release.yml publishes starts no run here: github starts no workflow for what github.token does, so each
+# release is told once.
+name: patch-notes
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the release to tell, by its tag (v0.39.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patch-notes-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  tell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: tell the patch notes chat
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+        run: |
+          # each as pasted, less spaces anywhere and quotes around it; a chat written as telegram's web app
+          # shows a topic, -100…_<topic>, is the chat and then the topic
+          clean() { printf '%s' "$1" | tr -d '[:space:]' | sed -E "s/^([\"'])(.*)\\1\$/\\2/"; }
+          token=$(clean "$TELEGRAM_BOT_TOKEN")
+          chat=$(clean "$TELEGRAM_CHAT_ID")
+          thread=$(clean "$TELEGRAM_THREAD_ID")
+          if [[ $chat =~ ^(-?[0-9]+)_([0-9]+)$ ]]; then
+            chat=${BASH_REMATCH[1]}
+            thread=${thread:-${BASH_REMATCH[2]}}
+          fi
+          if [ -z "$token" ] || [ -z "$chat" ]; then
+            echo "no TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets: nothing sent"
+            exit 0
+          fi
+          # the release as it's published, its notes the post's: a draft or a prerelease isn't news
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,body > release.json
+          if [ "$(jq -r '.isDraft or .isPrerelease' release.json)" = true ]; then
+            echo "$TAG is a draft or a prerelease: nothing sent"
+            exit 0
+          fi
+          version=${TAG#v}
+          notes=$(jq -r '.body // ""' release.json)
+          # the notes that only say the version add nothing under a heading that says it
+          [ "$notes" != "agentmash lobby $version" ] || notes=""
+          {
+            printf 'agentmash lobby %s is out\n\n' "$version"
+            [ -z "$notes" ] || printf '%s\n\n' "$notes"
+            printf 'the app updates itself within the hour. new here: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$TAG"
+          } > post.txt
+          cat post.txt
+          args=(--data-urlencode "chat_id=$chat" --data-urlencode "text@post.txt" --data-urlencode 'link_preview_options={"is_disabled":true}')
+          [ -z "$thread" ] || args+=(--data-urlencode "message_thread_id=$thread")
+          curl -fsS --max-time 15 -o /dev/null "https://api.telegram.org/bot$token/sendMessage" "${args[@]}"
+          echo "sent to the patch notes chat"
