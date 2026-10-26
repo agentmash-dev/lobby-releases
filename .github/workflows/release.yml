@@ -3,10 +3,16 @@
 # token with read-only contents on that one repository).
 #
 #   gh workflow run release --repo agentmash-dev/lobby-releases                  the version on lobby's main
-#   gh workflow run release --repo agentmash-dev/lobby-releases -f dry_run=true  builds it all, publishes nothing
+#   gh workflow run release --repo agentmash-dev/lobby-releases -f dry_run=true  builds and checks it all, publishes nothing
 #
 # the version is apps/desktop/package.json's on that commit: bump it in lobby first. the release gets the files the
 # app updates from (src/updates.ts there): the mac zips and dmgs, the windows installer, install.sh and SHA256SUMS.
+#
+# in order: lobby's typecheck and tests, then the builds, each package checked on its own os, then a prerelease,
+# its files downloaded back and checked against SHA256SUMS, and only then the release everyone gets. the app, the
+# download links and install.sh all go by releases/latest, which a prerelease never is, so a run that stops halfway
+# reaches nobody. a bad release is never taken back: ship x.y.z+1 from the last good ref (-f ref=<tag or commit>,
+# with apps/desktop/package.json bumped there), and the app updates past it within the hour.
 name: release
 
 on:
@@ -22,33 +28,62 @@ on:
         description: build everything, publish nothing
         type: boolean
         default: false
+      skip_checks:
+        description: skip lobby's typecheck and tests (for a fix that can't wait on a check that is itself broken)
+        type: boolean
+        default: false
 
+# read only, but for the one step that publishes
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  mac:
-    runs-on: macos-14
-    timeout-minutes: 45
+  check:
+    if: ${{ !inputs.skip_checks }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
           ref: ${{ inputs.ref }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  mac:
+    needs: check
+    if: ${{ !cancelled() && needs.check.result != 'failure' }}
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: agentmash-dev/lobby
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
       # both arches, ad-hoc signed (scripts/dist-mac.mjs)
       - run: npm run dist:mac
-      - uses: actions/upload-artifact@v4
+      # each package checked as windows' is: production files only, node-pty's binaries unpacked, electron's fuses
+      - run: node --conditions=source --import tsx scripts/dist-check.mjs --package --app apps/desktop/release/mac-arm64/agentmash-lobby.app
+      - run: node --conditions=source --import tsx scripts/dist-check.mjs --package --app apps/desktop/release/mac/agentmash-lobby.app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mac
           if-no-files-found: error
@@ -59,16 +94,18 @@ jobs:
             apps/desktop/release/agentmash-lobby-mac-x64.dmg
 
   windows:
+    needs: check
+    if: ${{ !cancelled() && needs.check.result != 'failure' }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
           ref: ${{ inputs.ref }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
@@ -81,7 +118,7 @@ jobs:
         run: |
           version=$(node -p "require('./apps/desktop/package.json').version")
           mv "apps/desktop/release/agentmash-lobby-$version-setup.exe" apps/desktop/release/agentmash-lobby-win-x64-setup.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows
           if-no-files-found: error
@@ -89,16 +126,19 @@ jobs:
 
   publish:
     needs: [mac, windows]
+    if: ${{ !cancelled() && needs.mac.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
           ref: ${{ inputs.ref }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -114,7 +154,8 @@ jobs:
           elif [ -f "docs/releases/$version.md" ]; then cp "docs/releases/$version.md" notes.md
           else echo "agentmash lobby $version" > notes.md; fi
           ls -la dist
-      - name: publish
+      # a prerelease first: nothing goes by it (releases/latest skips it) until its files are checked below
+      - name: publish as a prerelease
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +164,23 @@ jobs:
             echo "::error::v$version is already released: bump apps/desktop/package.json in lobby first"
             exit 1
           fi
-          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash lobby $version" --notes-file notes.md --latest
+          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash lobby $version" --notes-file notes.md --prerelease
+      # what github serves is what was built and checked: every file downloaded back, against SHA256SUMS
+      - name: check the files as published
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir published
+          gh release download "v$version" --repo "$GITHUB_REPOSITORY" --dir published
+          (cd published && sha256sum -c SHA256SUMS)
+          cmp published/SHA256SUMS dist/SHA256SUMS
+          [ "$(ls published | wc -l)" = "$(ls dist | wc -l)" ] || { echo "::error::the release has other files than were built"; exit 1; }
+      - name: release it to everyone
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v$version" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
       # the agentmash community's patch notes chat on telegram, when the bot's secrets are here (agentmash's
       # RUNBOOK.md, "patch notes on telegram"). A post that doesn't go never fails the release.
       - name: tell the patch notes chat
