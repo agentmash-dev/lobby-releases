@@ -8,11 +8,12 @@
 # the version is apps/desktop/package.json's on that commit: bump it in lobby first. the release gets the files the
 # app updates from (src/updates.ts there): the mac zips and dmgs, the windows installer, install.sh and SHA256SUMS.
 #
-# in order: lobby's typecheck and tests, then the builds, each package checked on its own os, then a prerelease,
-# its files downloaded back and checked against SHA256SUMS, and only then the release everyone gets. the app, the
-# download links and install.sh all go by releases/latest, which a prerelease never is, so a run that stops halfway
-# reaches nobody. a bad release is never taken back: ship x.y.z+1 from the last good ref (-f ref=<tag or commit>,
-# with apps/desktop/package.json bumped there), and the app updates past it within the hour.
+# in order: the ref turned into one commit that every job after checks out, lobby's typecheck and tests on it, then
+# the builds, each package checked on its own os, then a prerelease, its files downloaded back and checked against
+# SHA256SUMS, and only then the release everyone gets. the app, the download links and install.sh all go by
+# releases/latest, which a prerelease never is, so a run that stops halfway reaches nobody. a bad release is never
+# taken back: ship x.y.z+1 from the last good ref (-f ref=<tag or commit>, with apps/desktop/package.json bumped
+# there), and the app updates past it within the hour.
 name: release
 
 on:
@@ -42,7 +43,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # the ref to one commit, once: lobby's main can move while this runs (a merge, a version bump), and a job that
+  # checked out the branch itself could build code the check never ran, or tag older binaries with a newer version.
+  # no if here, so skip_checks never skips it. the sha goes in the run's summary.
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          GH_TOKEN: ${{ secrets.LOBBY_SOURCE_TOKEN }}
+          REF: ${{ inputs.ref }}
+        run: |
+          sha=$(gh api "repos/agentmash-dev/lobby/commits/$REF" --jq .sha)
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::$REF is no branch, tag or commit in agentmash-dev/lobby"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "agentmash-dev/lobby \`$REF\` is $sha: the check, both builds and the release all come from it" >> "$GITHUB_STEP_SUMMARY"
+
   check:
+    needs: resolve
     if: ${{ !inputs.skip_checks }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -50,7 +71,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -62,15 +83,18 @@ jobs:
       - run: npm test
 
   mac:
-    needs: check
-    if: ${{ !cancelled() && needs.check.result != 'failure' }}
+    needs: [resolve, check]
+    # only after a check that passed, or one skipped on purpose with skip_checks. a check past its timeout ends
+    # 'cancelled', not 'failure', and stops the release as a failed one does. resolve is asked for by name: when it
+    # fails, check is only skipped, and with skip_checks that would build an empty ref, lobby's default branch.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.check.result == 'success' || (inputs.skip_checks && needs.check.result == 'skipped')) }}
     runs-on: macos-14
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -94,15 +118,16 @@ jobs:
             apps/desktop/release/agentmash-lobby-mac-x64.dmg
 
   windows:
-    needs: check
-    if: ${{ !cancelled() && needs.check.result != 'failure' }}
+    needs: [resolve, check]
+    # as mac's
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.check.result == 'success' || (inputs.skip_checks && needs.check.result == 'skipped')) }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -125,7 +150,8 @@ jobs:
           path: apps/desktop/release/agentmash-lobby-win-x64-setup.exe
 
   publish:
-    needs: [mac, windows]
+    # resolve for its sha: the version, install-mac.sh and the notes come from the commit the binaries were built from
+    needs: [resolve, mac, windows]
     if: ${{ !cancelled() && needs.mac.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -135,7 +161,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: agentmash-dev/lobby
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.LOBBY_SOURCE_TOKEN }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -145,9 +171,11 @@ jobs:
       - name: sums and notes
         env:
           NOTES: ${{ inputs.notes }}
+          SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           version=$(node -p "require('./apps/desktop/package.json').version")
           echo "version=$version" >> "$GITHUB_ENV"
+          echo "v$version is agentmash-dev/lobby@$SHA" >> "$GITHUB_STEP_SUMMARY"
           cp scripts/install-mac.sh dist/install.sh
           (cd dist && sha256sum agentmash-lobby-* install.sh > SHA256SUMS && cat SHA256SUMS)
           if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES" > notes.md
