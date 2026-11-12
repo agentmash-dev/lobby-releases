@@ -180,7 +180,7 @@ jobs:
           (cd dist && sha256sum agentmash-lobby-* install.sh > SHA256SUMS && cat SHA256SUMS)
           if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES" > notes.md
           elif [ -f "docs/releases/$version.md" ]; then cp "docs/releases/$version.md" notes.md
-          else echo "agentmash lobby $version" > notes.md; fi
+          else echo "agentmash $version" > notes.md; fi
           ls -la dist
       # a prerelease first: nothing goes by it (releases/latest skips it) until its files are checked below
       - name: publish as a prerelease
@@ -192,7 +192,7 @@ jobs:
             echo "::error::v$version is already released: bump apps/desktop/package.json in lobby first"
             exit 1
           fi
-          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash lobby $version" --notes-file notes.md --prerelease
+          gh release create "v$version" dist/* --repo "$GITHUB_REPOSITORY" --title "agentmash $version" --notes-file notes.md --prerelease
       # what github serves is what was built and checked: every file downloaded back, against SHA256SUMS
       - name: check the files as published
         if: ${{ !inputs.dry_run }}
@@ -235,9 +235,9 @@ jobs:
           fi
           notes=$(cat notes.md)
           # the notes that only say the version add nothing under a heading that says it
-          [ "$notes" != "agentmash lobby $version" ] || notes=""
+          [ "$notes" != "agentmash $version" ] || notes=""
           {
-            printf 'agentmash lobby %s is out\n\n' "$version"
+            printf 'agentmash %s is out\n\n' "$version"
             [ -z "$notes" ] || printf '%s\n\n' "$notes"
             printf 'the app updates itself within the hour. new here: https://github.com/%s/releases/tag/v%s\n' "$GITHUB_REPOSITORY" "$version"
           } > post.txt
