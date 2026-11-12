@@ -59,10 +59,11 @@ jobs:
           fi
           version=${TAG#v}
           notes=$(jq -r '.body // ""' release.json)
-          # the notes that only say the version add nothing under a heading that says it
-          [ "$notes" != "agentmash lobby $version" ] || notes=""
+          # the notes that only say the version add nothing under a heading that says it. a release from before
+          # 0.44.0 says it by the app's old name
+          case "$notes" in "agentmash $version" | "agentmash lobby $version") notes="" ;; esac
           {
-            printf 'agentmash lobby %s is out\n\n' "$version"
+            printf 'agentmash %s is out\n\n' "$version"
             [ -z "$notes" ] || printf '%s\n\n' "$notes"
             printf 'the app updates itself within the hour. new here: https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$TAG"
           } > post.txt

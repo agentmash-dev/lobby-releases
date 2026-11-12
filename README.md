@@ -1,6 +1,6 @@
-# agentmash lobby
+# agentmash
 
-downloads for the agentmash lobby desktop app: your coding agents side by side on your own logins, your team's sessions next to yours, and a way to ask a teammate's agent for something that they approve first. the download page is [agentmash.dev/download](https://agentmash.dev/download).
+downloads for the agentmash desktop app: your coding agents side by side on your own logins, your team's sessions next to yours, and a way to ask a teammate's agent for something that they approve first. the download page is [agentmash.dev/download](https://agentmash.dev/download).
 
 this repository holds release builds only. the source is private.
 
