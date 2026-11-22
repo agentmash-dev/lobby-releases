@@ -8,6 +8,11 @@
 # the version is apps/desktop/package.json's on that commit: bump it in lobby first. the release gets the files the
 # app updates from (src/updates.ts there): the mac zips and dmgs, the windows installer, install.sh and SHA256SUMS.
 #
+# the windows installer and its exes are authenticode-signed (agentmash Corporation, SSL.com eSigner). the secrets
+# ES_USERNAME, ES_PASSWORD, ES_CREDENTIAL_ID and ES_TOTP_SECRET of this repository sign it; without them the windows
+# job fails and nothing is released. lobby's docs/windows-signing.md says what each is. SHA256SUMS is made in the
+# publish job, from the signed file.
+#
 # in order: the ref turned into one commit that every job after checks out, lobby's typecheck and tests on it, then
 # the builds, each package checked on its own os, then a prerelease, its files downloaded back and checked against
 # SHA256SUMS, and only then the release everyone gets. the app, the download links and install.sh all go by
@@ -135,9 +140,59 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      # the installer is authenticode-signed as it is built (lobby's docs/windows-signing.md). the provider is SSL.com
+      # eSigner, through its CodeSignTool, a java program: this pinned version, checked against the sum taken when
+      # it was pinned (SSL.com publishes none), since it is handed the signing credentials. the zip without a java
+      # of its own (31 MB, not 215): the runner's java 17 runs it.
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: CodeSignTool
+        shell: pwsh
+        env:
+          VERSION: v1.3.2
+          SHA256: f14b1e1ef14bfa1fd00279c363aab0debbf5dcfba0e4bcdce5d22bb771de0e3a
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'CodeSignTool.zip'
+          Invoke-WebRequest -Uri "https://github.com/SSLcom/CodeSignTool/releases/download/$env:VERSION/CodeSignTool-$env:VERSION.zip" -OutFile $zip
+          $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          if ($got -ne $env:SHA256) { Write-Host "::error::CodeSignTool $env:VERSION is $got, not the pinned $env:SHA256"; exit 1 }
+          $dir = Join-Path $env:RUNNER_TEMP 'CodeSignTool'
+          Expand-Archive -Path $zip -DestinationPath $dir
+          "CODE_SIGN_TOOL_PATH=$dir" >> $env:GITHUB_ENV
+      # the four secrets reach this step only. LOBBY_RELEASE: without them, or when a signature fails, the build
+      # stops (scripts/sign-windows.cjs), so nothing unsigned gets as far as the upload. a dry run signs too:
+      # it is the way to try the secrets without a release.
       - run: npm run dist:win
+        env:
+          LOBBY_RELEASE: '1'
+          ES_USERNAME: ${{ secrets.ES_USERNAME }}
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+          ES_CREDENTIAL_ID: ${{ secrets.ES_CREDENTIAL_ID }}
+          ES_TOTP_SECRET: ${{ secrets.ES_TOTP_SECRET }}
       # the package checked the way lobby's ci does it
       - run: node --conditions=source --import tsx scripts/dist-check.mjs --package --app apps/desktop/release/win-unpacked/agentmash-lobby.exe
+      # windows' own word on every exe built (and node-pty's binaries): signtool verify /pa /v and
+      # Get-AuthenticodeSignature, each Valid, timestamped and signed by agentmash Corporation, or the job fails
+      - name: verify the signatures of the build
+        shell: pwsh
+        run: |
+          $setup = Get-Item apps\desktop\release\agentmash-lobby-*-setup.exe
+          .\scripts\verify-windows-signatures.ps1 apps\desktop\release\win-unpacked $setup.FullName -AtLeast 4
+      # and on the app as the installer puts it on disk: the uninstaller exists nowhere else (it is made inside the
+      # installer), and this is the copy people run. a silent per-user install into the runner's temp folder, no
+      # admin; the runner is thrown away after, so nothing is uninstalled.
+      - name: verify the signatures of the installed app
+        shell: pwsh
+        run: |
+          $setup = Get-Item apps\desktop\release\agentmash-lobby-*-setup.exe
+          $dir = Join-Path $env:RUNNER_TEMP 'installed'
+          # nsis reads /D= last and unquoted
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/S', "/D=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Host "::error::the installer ended with $($p.ExitCode)"; exit 1 }
+          if (-not (Get-ChildItem $dir -Filter 'Uninstall*.exe')) { Write-Host "::error::no uninstaller in $dir"; exit 1 }
+          .\scripts\verify-windows-signatures.ps1 $dir -AtLeast 4
       # the name the app updates from, whatever the version
       - shell: bash
         run: |
